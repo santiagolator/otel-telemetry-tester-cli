@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name="otel-telemetry-tester-cli",
     version="0.1.0",
-    packages=find_packages(),
+    packages=find_packages(include=["otel_telemetry_tester_cli*"]),
     install_requires=[
         'opentelemetry-api>=1.22.0',
         'opentelemetry-sdk>=1.22.0',

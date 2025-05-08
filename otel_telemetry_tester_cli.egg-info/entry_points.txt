@@ -1,0 +1,2 @@
+[console_scripts]
+otel-tester = otel_telemetry_tester_cli.cli:main

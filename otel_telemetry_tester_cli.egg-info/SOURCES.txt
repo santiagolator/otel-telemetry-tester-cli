@@ -1,0 +1,12 @@
+LICENSE
+README.md
+setup.py
+otel_telemetry_tester_cli/__init__.py
+otel_telemetry_tester_cli/cli.py
+otel_telemetry_tester_cli/sender.py
+otel_telemetry_tester_cli.egg-info/PKG-INFO
+otel_telemetry_tester_cli.egg-info/SOURCES.txt
+otel_telemetry_tester_cli.egg-info/dependency_links.txt
+otel_telemetry_tester_cli.egg-info/entry_points.txt
+otel_telemetry_tester_cli.egg-info/requires.txt
+otel_telemetry_tester_cli.egg-info/top_level.txt
