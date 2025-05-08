@@ -1,30 +1,38 @@
-name: Upload Python Package to PyPI when a Release is Created
+name: Publish Python Package to PyPI
 
 on:
   release:
     types: [created]
 
 jobs:
-  pypi-publish:
-    name: Publish release to PyPI
+  build-and-publish:
+    name: Build and publish Python package
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/otel-telemetry-tester-cli
     permissions:
-      id-token: write
+      id-token: write  # Necesario para OIDC
+      contents: read   # Necesario para actions/checkout
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.x"
-      - name: Install dependencies
+
+      - name: Install build tools
         run: |
           python -m pip install --upgrade pip
-          pip install setuptools wheel
+          pip install build
+
       - name: Build package
         run: |
-          python setup.py sdist bdist_wheel
-      - name: Publish package distributions to PyPI
+          python -m build
+
+      - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Configuración para Trusted Publishers
+          verify-metadata: true
+          verbose: true
