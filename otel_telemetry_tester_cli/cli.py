@@ -13,7 +13,7 @@ def parse_args():
                       help='Endpoint del collector OTLP (ej: localhost:4317)')
     parser.add_argument('--protocol', choices=['grpc', 'http'], default='grpc',
                       help='Protocolo de comunicación')
-    parser.add_argument('--service-name', default='otel-test-service',
+    parser.add_argument('--service-name', default='otel-tester-service',
                       help='Nombre del servicio en los recursos')
     parser.add_argument('--secure', action='store_true',
                       help='Usar conexión TLS/SSL')
@@ -34,17 +34,25 @@ def parse_args():
     
     # Cantidades
     parser.add_argument('--trace-count', type=int, default=1,
-                      help='Número de traces a generar')
+                      help='Traces por iteración (modo tail) o totales')
     parser.add_argument('--metric-count', type=int, default=1,
-                      help='Número de métricas a generar')
+                      help='Métricas por iteración (modo tail) o totales')
     parser.add_argument('--log-count', type=int, default=1,
-                      help='Número de logs a generar')
+                      help='Logs por iteración (modo tail) o totales')
     
     # Intervalos
-    parser.add_argument('--interval', type=float, default=0,
-                      help='Intervalo entre envíos en segundos')
+    parser.add_argument('--interval', type=float, default=1.0,
+                      help='Intervalo entre iteraciones en segundos')
     parser.add_argument('--metric-interval', type=int, default=5000,
                       help='Intervalo de exportación de métricas en milisegundos')
+
+    # Argumentos para modo tail
+    parser.add_argument('--tail', action='store_true',
+                      help='Ejecución continua hasta interrupción manual')
+    parser.add_argument('--compress', action='store_true',
+                      help='Habilitar compresión gzip para los exports')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                      help='Mostrar detalles de ejecución')
     
     return parser.parse_args()
 

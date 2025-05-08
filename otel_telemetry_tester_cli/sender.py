@@ -1,5 +1,7 @@
 import time
+import signal
 import logging
+from typing import Optional
 from opentelemetry import trace, metrics
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.sdk.trace import TracerProvider
@@ -19,25 +21,33 @@ from opentelemetry.sdk.resources import Resource
 class TelemetrySender:
     def __init__(self, args):
         self.args = args
+        self.running = True
+        self.iteration = 0
+        self.sent_traces = 0
+        self.sent_metrics = 0
+        self.sent_logs = 0
+        
         self.resource = Resource.create({
             "service.name": args.service_name,
             "service.version": "1.0.0"
         })
-        self.headers = self.parse_headers(args.header)
         
+        self.headers = self.parse_headers(args.header)
         self.setup_exporters()
         self.setup_providers()
+        
+        # Configurar manejo de señales
+        signal.signal(signal.SIGINT, self.handle_signal)
+        signal.signal(signal.SIGTERM, self.handle_signal)
 
     def parse_headers(self, header_list):
         """Convierte los headers en formato válido para los exporters"""
-        if not header_list:
-            return []
         headers = []
-        for header in header_list:
-            if "=" not in header:
-                continue
-            key, value = header.split("=", 1)
-            headers.append((key.strip(), value.strip()))
+        if header_list:
+            for header in header_list:
+                if "=" in header:
+                    key, value = header.split("=", 1)
+                    headers.append((key.strip(), value.strip()))
         return headers
 
     def setup_exporters(self):
@@ -46,7 +56,8 @@ class TelemetrySender:
         
         common_args = {
             "headers": self.headers,
-            "timeout": self.args.timeout
+            "timeout": self.args.timeout,
+            "compression": self.args.compress  # True/False
         }
 
         if protocol == 'grpc':
@@ -86,7 +97,10 @@ class TelemetrySender:
                 resource=self.resource
             )
             trace_provider.add_span_processor(
-                BatchSpanProcessor(self.trace_exporter)
+                BatchSpanProcessor(
+                    self.trace_exporter,
+                    schedule_delay_millis=5000 if self.args.tail else None
+                )
             )
             trace.set_tracer_provider(trace_provider)
 
@@ -102,117 +116,166 @@ class TelemetrySender:
             )
             metrics.set_meter_provider(metric_provider)
 
-        # Configurar logs (parte corregida)
+        # Configurar logs
         if self.args.logs:
-            # Crear proveedor de logs
             logger_provider = LoggerProvider(
                 resource=self.resource
             )
-            
-            # Añadir procesador de logs
             logger_provider.add_log_record_processor(
-                BatchLogRecordProcessor(self.log_exporter)
+                BatchLogRecordProcessor(
+                    self.log_exporter,
+                    schedule_delay_millis=5000 if self.args.tail else None
+                )
             )
-            
-            # Configurar proveedor global
             set_logger_provider(logger_provider)
             
-            # Integrar con logging estándar
-            handler = LoggingHandler(
-                logger_provider=logger_provider
-            )
+            handler = LoggingHandler()
             logging.getLogger().addHandler(handler)
             logging.getLogger().setLevel(logging.INFO)
 
-    def generate_traces(self):
-        tracer = trace.get_tracer(__name__)
-        for i in range(self.args.trace_count):
-            with tracer.start_as_current_span(f"RootSpan-{i}") as span:
-                span.set_attribute("iteration", i)
-                span.set_attribute("environment", "test")
-                with tracer.start_as_current_span(f"ChildSpan-{i}"):
-                    time.sleep(0.1)
-                    if i % 2 == 0:
-                        span.add_event("Even iteration processed")
-                if self.args.interval > 0 and i < self.args.trace_count - 1:
-                    time.sleep(self.args.interval)
+    def handle_signal(self, signum, frame):
+        """Maneja señales de interrupción"""
+        print("\n🔴 Recibida señal de terminación. Deteniendo...")
+        self.running = False
 
-    def generate_metrics(self):
-        meter = metrics.get_meter(__name__)
-        counter = meter.create_counter("test.counter")
-        histogram = meter.create_histogram(
-            "test.duration",
-            unit="ms",
-            description="Request processing duration"
-        )
+    def should_continue(self):
+        """Determina si debe continuar la ejecución"""
+        if self.args.tail:
+            return self.running
+        return self.iteration < self.max_iterations()
+
+    def max_iterations(self):
+        """Calcula el máximo de iteraciones necesarias"""
+        counts = []
+        if self.args.traces and self.args.trace_count > 0:
+            counts.append(self.args.trace_count)
+        if self.args.metrics and self.args.metric_count > 0:
+            counts.append(self.args.metric_count)
+        if self.args.logs and self.args.log_count > 0:
+            counts.append(self.args.log_count)
+        return max(counts) if counts else 0
+
+    def generate_telemetry(self):
+        """Ejecuta el proceso principal de generación de telemetría"""
+        self.print_startup_message()
         
-        for i in range(self.args.metric_count):
-            counter.add(i, {"type": "test", "iteration": i})
-            histogram.record(i * 10, {"environment": "staging"})
-            if self.args.interval > 0 and i < self.args.metric_count - 1:
-                time.sleep(self.args.interval)
-
-    def generate_logs(self):
-        logger = logging.getLogger(__name__)
-        log_levels = ['INFO', 'WARNING', 'ERROR']
-        
-        for i in range(self.args.log_count):
-            level = log_levels[i % 3]
-            message = f"Test log message {i} - {level}"
-            
-            if level == 'INFO':
-                logger.info(message, extra={"iteration": i})
-            elif level == 'WARNING':
-                logger.warning(message, extra={"iteration": i})
-            else:
-                logger.error(message, extra={"iteration": i})
-            
-            if self.args.interval > 0 and i < self.args.log_count - 1:
-                time.sleep(self.args.interval)
-
-    def run(self):
         try:
-            start_time = time.time()
-            
-            if self.args.traces:
-                print(f"Generando {self.args.trace_count} traces...")
-                self.generate_traces()
-            
-            if self.args.metrics:
-                print(f"Generando {self.args.metric_count} métricas...")
-                self.generate_metrics()
-            
-            if self.args.logs:
-                print(f"Generando {self.args.log_count} logs...")
-                self.generate_logs()
-            
-            print(f"Proceso completado en {time.time() - start_time:.2f} segundos")
+            while self.should_continue():
+                start_time = time.time()
+                
+                if self.args.traces:
+                    self.generate_traces()
+                
+                if self.args.metrics:
+                    self.generate_metrics()
+                
+                if self.args.logs:
+                    self.generate_logs()
+                
+                self.iteration += 1
+                self.print_iteration_stats(start_time)
+                
+                if self.args.interval > 0 and self.should_continue():
+                    time.sleep(self.args.interval)
         
         except Exception as e:
-            print(f"Error: {str(e)}")
+            print(f"❌ Error crítico: {str(e)}")
+            raise
         
         finally:
             self.shutdown()
 
+    def generate_traces(self):
+        """Genera un lote de traces"""
+        tracer = trace.get_tracer(__name__)
+        for i in range(self.args.trace_count):
+            with tracer.start_as_current_span(f"/otel-tester-trace") as span:
+                span.set_attribute("iteration", self.iteration)
+                span.set_attribute("batch", i)
+                self.sent_traces += 1
+                time.sleep(0.01)  # Simular trabajo
+
+    def generate_metrics(self):
+        """Genera un lote de métricas"""
+        meter = metrics.get_meter(__name__)
+        counter = meter.create_counter("otel.tester.metric")
+        for i in range(self.args.metric_count):
+            counter.add(i, {"iteration": self.iteration})
+            self.sent_metrics += 1
+
+    def generate_logs(self):
+        """Genera un lote de logs"""
+        logger = logging.getLogger(__name__)
+        log_levels = ['INFO', 'WARNING', 'ERROR']
+        for i in range(self.args.log_count):
+            level = log_levels[i % 3]
+            msg = f"Log batch {self.iteration} - {i}"
+            logger.log(
+                getattr(logging, level),
+                msg,
+                extra={"iteration": self.iteration}
+            )
+            self.sent_logs += 1
+
+    def print_startup_message(self):
+        """Muestra el mensaje inicial"""
+        print("🚀 Iniciando envío de telemetría")
+        if self.args.tail:
+            print("🔵 Modo continuo activado (Ctrl+C para detener)")
+            print(f"📦 Tamaño de lote: "
+                  f"Traces: {self.args.trace_count}/batch | "
+                  f"Métricas: {self.args.metric_count}/batch | "
+                  f"Logs: {self.args.log_count}/batch")
+        else:
+            print(f"🔢 Modo por lotes: {self.max_iterations()} iteraciones")
+
+    def print_iteration_stats(self, start_time):
+        """Muestra estadísticas de la iteración"""
+        if self.args.verbose:
+            duration = time.time() - start_time
+            print(f"\n🔄 Iteración {self.iteration} completada")
+            print(f"⏱️  Duración: {duration:.2f}s")
+            print(f"📤 Enviados: "
+                  f"Traces: {self.sent_traces} | "
+                  f"Métricas: {self.sent_metrics} | "
+                  f"Logs: {self.sent_logs}")
+
+    def run(self):
+        """Punto de entrada principal"""
+        try:
+            self.generate_telemetry()
+        except Exception as e:
+            print(f"❌ Error en ejecución: {str(e)}")
+            raise
+        finally:
+            self.shutdown()
+    
     def shutdown(self):
-        # Shutdown para traces
-        if self.args.traces:
-            trace.get_tracer_provider().shutdown()
+        """Cierra los recursos de forma segura"""
+        try:
+            # Shutdown para traces
+            if self.args.traces:
+                trace.get_tracer_provider().shutdown()
+
+            # Shutdown para métricas
+            if self.args.metrics:
+                metrics.get_meter_provider().shutdown()
+
+            # Shutdown para logs
+            if self.args.logs:
+                from opentelemetry._logs import get_logger_provider
+                logger_provider = get_logger_provider()
+                if logger_provider:
+                    logger_provider.shutdown()
+
+            # Limpiar handlers de logging
+            if self.args.logs:
+                root_logger = logging.getLogger()
+                for handler in root_logger.handlers[:]:
+                    if isinstance(handler, LoggingHandler):
+                        root_logger.removeHandler(handler)
+
+                print("\n✅ Shutdown completado. Recursos liberados")
         
-        # Shutdown para métricas
-        if self.args.metrics:
-            metrics.get_meter_provider().shutdown()
-        
-        # Shutdown para logs
-        if self.args.logs:
-            from opentelemetry._logs import get_logger_provider
-            logger_provider = get_logger_provider()
-            if logger_provider:
-                logger_provider.shutdown()
-        
-        # Limpiar handlers de logging
-        if self.args.logs:
-            root_logger = logging.getLogger()
-            for handler in root_logger.handlers[:]:
-                if isinstance(handler, LoggingHandler):
-                    root_logger.removeHandler(handler)
+        except Exception as e:
+            print(f"⚠️ Error durante el shutdown: {str(e)}")

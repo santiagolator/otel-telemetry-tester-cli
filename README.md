@@ -8,10 +8,13 @@ Herramienta CLI para probar implementaciones de OpenTelemetry enviando datos de 
 
 ## Características Principales
 
-✅ Envío de Traces, Metrics y Logs  
+✅ Envío de Traces, Métricas y Logs  
+✅ Modo continuo (tail) para pruebas prolongadas  
 ✅ Soporte para protocolos gRPC y HTTP  
-✅ Configuración de headers personalizados (ej: API Keys)  
+✅ Configuración de headers personalizados (API Keys, JWT, etc)  
+✅ Compresión gzip para transmisiones eficientes  
 ✅ Generación de datos de prueba parametrizable  
+✅ Estadísticas en tiempo real con modo verbose  
 ✅ Intervalos de envío configurables  
 ✅ Conexiones seguras (TLS/SSL)  
 ✅ Compatible con principales backends (New Relic, Grafana, Jaeger, etc)
@@ -49,6 +52,9 @@ otel-tester --help
 | `--secure`       | Usar conexión TLS/SSL          | False               |                       |
 | `--timeout `     | Timeout de conexión (segundos) | 10                  | 15                    |
 | `--header`       | Headers en formato clave=valor |                     | Api-Key=abc123        |
+|`--tail`	           |Ejecución continua hasta interrupción	|False	        |                 |
+|`--compress`	       |Habilitar compresión gzip	      |False	              |  |
+|`--verbose`	       |Mostrar detalles de ejecución	  |False                |  |
 
 ### Tipos de telemetria
 
@@ -69,6 +75,19 @@ otel-tester --help
 
 ## Ejemplos avanzados
 
+Modo continuo con compresión:
+
+```bash
+otel-tester --tail \
+  --endpoint collector:4317 \
+  --protocol grpc \
+  --compress \
+  --traces --trace-count 5 \
+  --metrics --metric-count 100 \
+  --interval 0.5 \
+  --verbose
+```
+
 Enviar todos los tipos de telemetría:
 
 ```bash
@@ -81,25 +100,50 @@ otel-tester --endpoint localhost:4317 \
   --interval 0.2
 ```
 
-Generar carga continua de métricas:
+"Prueba de stress" con logs:
 
 ```bash
-otel-tester --endpoint collector:4317 \
-  --metrics \
-  --metric-count 1000 \
-  --metric-interval 1000
+otel-tester --endpoint localhost:4317 \
+  --logs --log-count 1000 \
+  --interval 0.1 \
+  --service-name "stress-test"
 ```
 
 Enviar con autenticación y seguridad:
 
 ```bash
-otel-tester --endpoint https://collector:443 \
+otel-tester --endpoint https://api.monitoring.com:443 \
   --protocol http \
   --secure \
-  --header "Authorization=Bearer TOKEN" \
-  --traces \
-  --trace-count 5
+  --header "Authorization=Bearer eyJhbGci..." \
+  --header "X-Custom-Header=value" \
+  --traces --metrics \
+  --trace-count 10 \
+  --metric-count 50
 ```
+
+### Modo Continuo (Tail)
+Ejecuta la herramienta en segundo plano para monitoreo continuo:
+
+```bash
+otel-tester --tail \
+  --endpoint otlp.nr-data.net:4317 \
+  --protocol grpc \
+  --traces --trace-count 10 \
+  --metrics --metric-count 200 \
+  --interval 1.5 \
+  --compress
+```
+
+#### Características del modo tail:
+
+🕹️ Control con Ctrl+C para detención limpia
+
+📊 Estadísticas en tiempo real con --verbose
+
+🔄 Reintentos automáticos en errores transitorios
+
+📦 Optimización de recursos para ejecuciones prolongadas
 
 # Licencia
 Distribuido bajo licencia MIT. Ver LICENSE para más detalles.
