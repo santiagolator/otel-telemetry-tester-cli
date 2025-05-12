@@ -4,83 +4,113 @@ from .sender import TelemetrySender
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='CLI para pruebas de telemetria para OpenTelemetry',
+        description='OpenTelemetry Telemetry Tester - Envía datos de prueba a backends OTLP',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
     # Configuración básica
-    parser.add_argument('--endpoint', required=True,
-                      help='Endpoint del collector OTLP (ej: localhost:4317)')
-    parser.add_argument('--protocol', choices=['grpc', 'http'], default='grpc',
+    parser.add_argument('-e','--endpoint', required=True,
+                      help='Endpoint del collector (ej: otlp.nr-data.net:4317)')
+    parser.add_argument('-p','--protocol', choices=['grpc', 'http'], default='grpc',
                       help='Protocolo de comunicación')
     parser.add_argument('--service-name', default='otel-tester-service',
                       help='Nombre del servicio en los recursos')
     parser.add_argument('--secure', action='store_true',
-                      help='Usar conexión TLS/SSL')
+                      help='Usar TLS/SSL para la conexión')
     parser.add_argument('--timeout', type=int, default=10,
                       help='Timeout de conexión en segundos')
     
-    # Headers
+    # Tipos de telemetría
+    parser.add_argument('-a','--all', type=int, metavar='COUNT',
+                      help='Envía la misma cantidad para todos los tipos de telemetría')
+    parser.add_argument('-traces','--trace-count', type=int, default=0,
+                      help='Número total de traces a generar (sobrescribe --all)')
+    parser.add_argument('-metrics','--metric-count', type=int, default=0,
+                      help='Número total de métricas a generar (sobrescribe --all)')
+    parser.add_argument('-logs','--log-count', type=int, default=0,
+                      help='Número total de logs a generar (sobrescribe --all)')
+    
+    # Modo de operación
+    parser.add_argument('-t','--tail', action='store_true',
+                      help='Ejecución continua hasta interrupción')
+    parser.add_argument('--interval', type=float, default=1.0,
+                      help='Intervalo entre ciclos en segundos (solo en modo tail)')
+    
+    # Configuración avanzada
     parser.add_argument('--header', action='append',
                       help='Headers en formato clave=valor (ej: Api-Key=abc123)')
-    
-    # Tipos de telemetría
-    parser.add_argument('--traces', action='store_true',
-                      help='Habilitar envío de traces')
-    parser.add_argument('--metrics', action='store_true',
-                      help='Habilitar envío de métricas')
-    parser.add_argument('--logs', action='store_true',
-                      help='Habilitar envío de logs')
-    
-    # Cantidades
-    parser.add_argument('--trace-count', type=int, default=1,
-                      help='Traces por iteración (modo tail) o totales')
-    parser.add_argument('--metric-count', type=int, default=1,
-                      help='Métricas por iteración (modo tail) o totales')
-    parser.add_argument('--log-count', type=int, default=1,
-                      help='Logs por iteración (modo tail) o totales')
-    
-    # Intervalos
-    parser.add_argument('--interval', type=float, default=1.0,
-                      help='Intervalo entre iteraciones en segundos')
-    parser.add_argument('--metric-interval', type=int, default=5000,
-                      help='Intervalo de exportación de métricas en milisegundos')
-
-    # Argumentos para modo tail
-    parser.add_argument('--tail', action='store_true',
-                      help='Ejecución continua hasta interrupción manual')
-    parser.add_argument('--compress', action='store_true',
-                      help='Habilitar compresión gzip para los exports')
-    parser.add_argument('--verbose', '-v', action='store_true',
+    parser.add_argument('-v', '--verbose', action='store_true',
                       help='Mostrar detalles de ejecución')
     
     return parser.parse_args()
 
-def main():
-    args = parse_args()
+def validate_args(args):
+    """Valida los argumentos proporcionados"""
+    error_messages = []
+
+    # Aplicar --all si se especificó
+    if args.all is not None:
+        if args.all < 0:
+            error_messages.append("El valor de --all debe ser ≥ 0")
+        
+        # Sobrescribir solo los counts no especificados
+        if args.trace_count == 0:
+            args.trace_count = args.all
+        if args.metric_count == 0:
+            args.metric_count = args.all
+        if args.log_count == 0:
+            args.log_count = args.all
+
+    # Validación común
+    if not any([args.trace_count > 0, args.metric_count > 0, args.log_count > 0]):
+        error_messages.append("Debe especificar al menos un tipo de telemetría con count > 0")
     
+    if args.tail and args.interval <= 0:
+        error_messages.append("El intervalo debe ser mayor que 0 en modo tail")
+    
+    if args.protocol == 'http' and not args.endpoint.startswith(('http://', 'https://')):
+        args.endpoint = f"http://{args.endpoint}"
+    
+    if error_messages:
+        raise ValueError("\n".join(error_messages))
+
+def main():
     try:
-        # Validar argumentos
-        if not any([args.traces, args.metrics, args.logs]):
-            raise ValueError("Debes especificar al menos un tipo de telemetría (--traces, --metrics, --logs)")
+        args = parse_args()
+        validate_args(args)
         
         # Configurar logging básico
-        logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
+        logging.basicConfig(
+            level=logging.DEBUG if args.verbose else logging.INFO,
+            format='%(levelname)s - %(message)s' if args.verbose else '%(message)s'
+        )
         
-        # Ejecutar el sender
         sender = TelemetrySender(args)
         sender.run()
-        print("✅ Telemetría enviada exitosamente")
+        
+        if not args.tail:
+            print("\n✅ Ejecución completada exitosamente")
     
     except KeyboardInterrupt:
-        print("\n🛑 Operación cancelada por el usuario")
-        exit(130)
+        print("\n🛑 Ejecución interrumpida por el usuario")
     except Exception as e:
-        print(f"❌ Error crítico: {str(e)}")
+        print(f"\n❌ Error crítico: {str(e)}")
         exit(1)
-    finally:
-        if 'sender' in locals():
-            sender.shutdown()
+
+
+def banner():
+
+    banner = r"""
+            _       _       _       _                     _                    _            _            
+       ___ | |_ ___| |     | |_ ___| | ___ _ __ ___   ___| |_ _ __ _   _      | |_ ___  ___| |_ ___ _ __ 
+      / _ \| __/ _ \ |_____| __/ _ \ |/ _ \ '_ ` _ \ / _ \ __| '__| | | |_____| __/ _ \/ __| __/ _ \ '__|
+     | (_) | ||  __/ |_____| ||  __/ |  __/ | | | | |  __/ |_| |  | |_| |_____| ||  __/\__ \ ||  __/ |   
+      \___/ \__\___|_|      \__\___|_|\___|_| |_| |_|\___|\__|_|   \__, |      \__\___||___/\__\___|_|   
+                                                                   |___/                                 
+    """
+    
+    print(banner)
 
 if __name__ == "__main__":
+    banner()
     main()

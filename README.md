@@ -12,7 +12,6 @@ Herramienta CLI para probar implementaciones de OpenTelemetry enviando datos de 
 ✅ Modo continuo (tail) para pruebas prolongadas  
 ✅ Soporte para protocolos gRPC y HTTP  
 ✅ Configuración de headers personalizados (API Keys, JWT, etc)  
-✅ Compresión gzip para transmisiones eficientes  
 ✅ Generación de datos de prueba parametrizable  
 ✅ Estadísticas en tiempo real con modo verbose  
 ✅ Intervalos de envío configurables  
@@ -31,8 +30,7 @@ pip install otel-telemetry-tester-cli
 otel-tester --endpoint otlp.nr-data.net:4317 \
   --protocol grpc \
   --secure \
-  --header "api-key=TU_API_KEY" \
-  --traces \
+  --header "api-key=API_KEY" \
   --trace-count 5
 ```
 
@@ -46,44 +44,34 @@ otel-tester --help
 
 | Argumento     | Descripcion                    | Valores por defecto | Ejemplo               |
 |----------------|--------------------------------|---------------------|-----------------------|
-| `--endpoint`     | Endpoint del collector OTLP    | Requerido           | otlp.nr-data.net:4317 |
-| `--protocol`     | Protocolo de comunicación      | grpc                | http                  |
+| `--endpoint`, `-e`    | Endpoint del collector OTLP    | Requerido           | otlp.nr-data.net:4317 |
+| `--protocol` , `-p`   | Protocolo de comunicación      | grpc                | http                  |
 | `--service-name` | Nombre del servicio            | otel-test-service   | my-awesome-service    |
 | `--secure`       | Usar conexión TLS/SSL          | False               |                       |
 | `--timeout `     | Timeout de conexión (segundos) | 10                  | 15                    |
 | `--header`       | Headers en formato clave=valor |                     | Api-Key=abc123        |
-|`--tail`	           |Ejecución continua hasta interrupción	|False	        |                 |
-|`--compress`	       |Habilitar compresión gzip	      |False	              |  |
-|`--verbose`	       |Mostrar detalles de ejecución	  |False                |  |
+|`--tail`, `-t`          |Ejecución continua hasta interrupción	|False	        |                 |
+|`--verbose`, `-v`	       |Mostrar detalles de ejecución	  |False                |  |
 
-### Tipos de telemetria
-
-|Argumento	|Descripción|
-|-------------|----------------------|
-|`--traces`	|Habilitar envío de traces|	
-|`--metrics`	|Habilitar envío de métricas|	
-|`--logs`	|Habilitar envío de logs|
-
-### Configuración de Cantidades
+### Configuración de cantidades y tipos de telemetria
 |Argumento	|Descripción	|Default	|Ejemplo|
 |----|-----|-----|-----|
-|`--trace-count`	|Número de traces a generar	|1	|10|
-|`--metric-count`	|Número de métricas a generar	|1	|50|
-|`--log-count`	|Número de logs a generar	|1	|100|
+|`--all`, `-a`	|Envía la misma cantidad para todos los tipos de telemetría	|1	|10|
+|`--trace-count`, `-traces`	|Número de traces a generar	|1	|10|
+|`--metric-count`, `-metrics`	|Número de métricas a generar	|1	|50|
+|`--log-count`, `-logs`	|Número de logs a generar	|1	|100|
 |`--interval`	|Intervalo entre envíos (segundos)	|0	|0.5|
-|`--metric-interval`	|Intervalo de exportación de métricas (ms)	|5000	|1000|
 
 ## Ejemplos avanzados
 
-Modo continuo con compresión:
+Envio de traces y metricas en modo continuo:
 
 ```bash
 otel-tester --tail \
   --endpoint collector:4317 \
   --protocol grpc \
-  --compress \
-  --traces --trace-count 5 \
-  --metrics --metric-count 100 \
+  --trace-count 5 \
+  --metric-count 100 \
   --interval 0.5 \
   --verbose
 ```
@@ -93,18 +81,14 @@ Enviar todos los tipos de telemetría:
 ```bash
 otel-tester --endpoint localhost:4317 \
   --protocol grpc \
-  --traces --metrics --logs \
-  --trace-count 10 \
-  --metric-count 20 \
-  --log-count 15 \
-  --interval 0.2
+  --all 10 
 ```
 
 "Prueba de stress" con logs:
 
 ```bash
 otel-tester --endpoint localhost:4317 \
-  --logs --log-count 1000 \
+  --log-count 1000 \
   --interval 0.1 \
   --service-name "stress-test"
 ```
@@ -117,9 +101,9 @@ otel-tester --endpoint https://api.monitoring.com:443 \
   --secure \
   --header "Authorization=Bearer eyJhbGci..." \
   --header "X-Custom-Header=value" \
-  --traces --metrics \
-  --trace-count 10 \
-  --metric-count 50
+  -metrics 100 \
+  -traces 10 \
+  -logs 50
 ```
 
 ### Modo Continuo (Tail)
@@ -129,10 +113,9 @@ Ejecuta la herramienta en segundo plano para monitoreo continuo:
 otel-tester --tail \
   --endpoint otlp.nr-data.net:4317 \
   --protocol grpc \
-  --traces --trace-count 10 \
-  --metrics --metric-count 200 \
+  --trace-count 10 \
+  ---metric-count 200 \
   --interval 1.5 \
-  --compress
 ```
 
 #### Características del modo tail:
