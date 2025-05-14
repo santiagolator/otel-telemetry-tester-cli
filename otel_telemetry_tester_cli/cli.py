@@ -13,9 +13,9 @@ def parse_args():
                       help='Endpoint del collector (ej: otlp.nr-data.net:4317)')
     parser.add_argument('-p','--protocol', choices=['grpc', 'http'], default='grpc',
                       help='Protocolo de comunicación')
-    parser.add_argument('--service-name', default='otel-tester-service',
+    parser.add_argument('-sn','--service-name', default='otel-tester-service',
                       help='Nombre del servicio en los recursos')
-    parser.add_argument('--secure', action='store_true',
+    parser.add_argument('-s','--secure', action='store_true',
                       help='Usar TLS/SSL para la conexión')
     parser.add_argument('--timeout', type=int, default=10,
                       help='Timeout de conexión en segundos')
@@ -23,24 +23,28 @@ def parse_args():
     # Tipos de telemetría
     parser.add_argument('-a','--all', type=int, metavar='COUNT',
                       help='Envía la misma cantidad para todos los tipos de telemetría')
-    parser.add_argument('-traces','--trace-count', type=int, default=0,
+    parser.add_argument('-tc','--trace-count', type=int, default=0,
                       help='Número total de traces a generar (sobrescribe --all)')
-    parser.add_argument('-metrics','--metric-count', type=int, default=0,
+    parser.add_argument('-mc','--metric-count', type=int, default=0,
                       help='Número total de métricas a generar (sobrescribe --all)')
-    parser.add_argument('-logs','--log-count', type=int, default=0,
+    parser.add_argument('-lc','--log-count', type=int, default=0,
                       help='Número total de logs a generar (sobrescribe --all)')
     
     # Modo de operación
     parser.add_argument('-t','--tail', action='store_true',
                       help='Ejecución continua hasta interrupción')
-    parser.add_argument('--interval', type=float, default=1.0,
+    parser.add_argument('-i','--interval', type=float, default=1.0,
                       help='Intervalo entre ciclos en segundos (solo en modo tail)')
+    parser.add_argument('--parallel', type=int, default=1,
+                      help='Nivel de paralelismo para envios (1=secuencial)')
     
     # Configuración avanzada
     parser.add_argument('--header', action='append',
                       help='Headers en formato clave=valor (ej: Api-Key=abc123)')
     parser.add_argument('-v', '--verbose', action='store_true',
                       help='Mostrar detalles de ejecución')
+    parser.add_argument('-nb','--no-banner', action='store_true',
+                      help='Omite el banner en consola')
     
     return parser.parse_args()
 
@@ -81,10 +85,15 @@ def main():
         
         # Configurar logging básico
         logging.basicConfig(
-            level=logging.DEBUG if args.verbose else logging.INFO,
-            format='%(levelname)s - %(message)s' if args.verbose else '%(message)s'
+            level=logging.WARNING,
+            format='%(levelname)s - %(message)s' if args.verbose else '%(message)s',
+            handlers=[logging.NullHandler()]  # No mostrar logs en consola
         )
         
+        # Si arg no-banner es True ejecutar banner()
+        if not args.no_banner:
+            banner()
+
         sender = TelemetrySender(args)
         sender.run()
         
@@ -106,11 +115,10 @@ def banner():
       / _ \| __/ _ \ |_____| __/ _ \ |/ _ \ '_ ` _ \ / _ \ __| '__| | | |_____| __/ _ \/ __| __/ _ \ '__|
      | (_) | ||  __/ |_____| ||  __/ |  __/ | | | | |  __/ |_| |  | |_| |_____| ||  __/\__ \ ||  __/ |   
       \___/ \__\___|_|      \__\___|_|\___|_| |_| |_|\___|\__|_|   \__, |      \__\___||___/\__\___|_|   
-                                                                   |___/                                 
+                                                                   |___/ hecho con ❤️ por Santiago Lator                         
     """
     
     print(banner)
 
 if __name__ == "__main__":
-    banner()
     main()

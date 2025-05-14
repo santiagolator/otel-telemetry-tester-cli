@@ -3,10 +3,16 @@ import json
 import signal
 import logging
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, List, Any, Optional
+import concurrent.futures
+import threading
+from threading import Lock
+from tqdm import tqdm
+import random
 from opentelemetry import trace, metrics
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.trace import Status, StatusCode
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -36,6 +42,29 @@ class TelemetrySender:
         self._setup_providers()
         self._setup_signal_handlers()
 
+        self.parallelism = args.parallel
+        self.lock = Lock()  # Para estadísticas thread-safe
+
+    def _thread_safe_update_stats(self, telemetry_type: str, success: bool):
+        """Actualiza estadísticas de manera segura para hilos"""
+        with self.lock:
+            if success:
+                self.stats[telemetry_type]['sent'] += 1
+            else:
+                self.stats[telemetry_type]['errors'] += 1
+
+    def _parallel_execute(self, func, count: int, telemetry_type: str):
+        """Ejecuta una función en paralelo"""
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallelism) as executor:
+            futures = [executor.submit(func, i) for i in range(count)]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    self._thread_safe_update_stats(telemetry_type, result)
+                except Exception as e:
+                    self._thread_safe_update_stats(telemetry_type, False)
+                    logging.error(f"Error en hilo: {str(e)}")
+    
     def _validate_counts(self):
         """Valida que al menos un tipo de telemetría tenga count > 0"""
         if not any([self.args.trace_count > 0, 
@@ -133,14 +162,14 @@ class TelemetrySender:
         """Configura el proveedor de métricas"""
         metric_reader = PeriodicExportingMetricReader(
             self.metric_exporter,
-            export_interval_millis=5000
+            export_interval_millis=1000 if self.args.tail else 5000
         )
         metric_provider = MeterProvider(
             resource=self.resource,
             metric_readers=[metric_reader]
         )
         metrics.set_meter_provider(metric_provider)
-
+    
     def _setup_log_provider(self):
         """Configura el proveedor de logs"""
         logger_provider = LoggerProvider(
@@ -149,14 +178,21 @@ class TelemetrySender:
         logger_provider.add_log_record_processor(
             BatchLogRecordProcessor(
                 self.log_exporter,
-                schedule_delay_millis=5000 if self.args.tail else None
+                #schedule_delay_millis=5000 if self.args.tail else None
+                schedule_delay_millis=100 if not self.args.tail else 5000  # <-- Envío más rápido
             )
         )
         set_logger_provider(logger_provider)
         
-        handler = LoggingHandler()
-        logging.getLogger().addHandler(handler)
-        logging.getLogger().setLevel(logging.INFO)
+        handler = LoggingHandler(
+            level=logging.DEBUG,  # Capturar todos los niveles
+            logger_provider=logger_provider
+        )
+        
+        custom_logger = logging.getLogger("otel_tester")
+        custom_logger.setLevel(logging.DEBUG)  # Aceptar todos los niveles
+        custom_logger.addHandler(handler)
+        custom_logger.propagate = False  # Evitar propagación a root logger
 
     def _setup_signal_handlers(self):
         """Configura el manejo de señales para shutdown"""
@@ -185,6 +221,8 @@ class TelemetrySender:
             logging.error(f"Error crítico: {str(e)}")
             raise
         finally:
+            if self.args.log_count > 0 and not self.args.tail:
+                time.sleep(0.2)  # Dar tiempo para el último envío
             self.shutdown()
         
         self._print_cycle_stats(time.time() - start_time)
@@ -212,88 +250,183 @@ class TelemetrySender:
             raise RuntimeError("Falló uno o más tipos de telemetría")
 
     def generate_traces(self):
-        """Genera traces con 3 segmentos: start, middle y end"""
+        """Genera traces con errores aleatorios en los spans"""
         try:
             tracer = trace.get_tracer(__name__)
-            for i in range(self.args.trace_count):
-                with tracer.start_as_current_span(f"/otel-tester-trace/{self.args.protocol}") as root_span:
-                    # Configurar atributos del trace principal
-                    root_span.set_attribute("iteration", i)
-                    root_span.set_attribute("service.name", self.args.service_name)
-                    root_span.set_attribute("trace.type", "segmented")
+            lock = threading.Lock()
+            error_probability = 0.3  # 30% de probabilidad de error
 
-                    # Primer segmento: Start
-                    with tracer.start_as_current_span("start") as start_span:
-                        start_span.set_attribute("segment", "initialization")
-                        start_span.add_event("Segment started", {"timestamp": time.time_ns()})
-                        self._simulate_work(0.02)  # Más tiempo en inicialización
+            def _generate_single_trace(trace_id: int):
+                try:
+                    with tracer.start_as_current_span(f"/otel-tester-trace/{self.args.protocol}") as root_span:
+                        # Decidir si este trace tendrá error
+                        has_error = random.random() < error_probability
+                        error_type = random.choice(["client", "server", "timeout"]) if has_error else None
 
-                        # Segundo segmento: Middle (como hijo de start)
-                        with tracer.start_as_current_span("middle") as middle_span:
-                            middle_span.set_attribute("segment", "processing")
-                            middle_span.add_event("Data processing", {"items": i * 10})
-                            self._simulate_work(0.05)  # Mayor carga en procesamiento
+                        root_span.set_attribute("iteration", trace_id)
+                        root_span.set_attribute("service.name", self.args.service_name)
+                        root_span.set_attribute("trace.type", "segmented-parallel")
 
-                            # Tercer segmento: End (como hijo de middle)
-                            with tracer.start_as_current_span("end") as end_span:
-                                end_span.set_attribute("segment", "finalization")
-                                end_span.add_event("Cleanup resources")
-                                self._simulate_work(0.01)  # Menos tiempo en finalización
+                        # Segmento Start
+                        with tracer.start_as_current_span("start") as start_span:
+                            self._simulate_work(0.02)
+                            if has_error and random.random() < 0.5:  # 50% probabilidad de error en start
+                                start_span.set_status(StatusCode.ERROR, "Error en inicialización")
+                                start_span.add_event("error", attributes={
+                                    "error.type": error_type,
+                                    "error.message": "Fallo en el proceso de inicialización"
+                                })
 
-                    self.stats['traces']['sent'] += 1
+                            # Segmento Middle
+                            with tracer.start_as_current_span("middle") as middle_span:
+                                self._simulate_work(0.05)
+                                if has_error and random.random() < 0.7:  # Mayor probabilidad en middle
+                                    middle_span.record_exception(ValueError("Error de procesamiento"))
+                                    middle_span.set_status(StatusCode.ERROR)
 
-                    if self.args.verbose:
-                        print(f"✅ Trace {i+1} generado")
+                                # Segmento End
+                                with tracer.start_as_current_span("end") as end_span:
+                                    self._simulate_work(0.01)
+                                    if has_error and not (start_span.is_recording() and start_span.status.is_ok):
+                                        end_span.set_attribute("error.propagated", True)
+                                        end_span.update_name("end-failed")
+
+                        # Actualizar estadísticas
+                        with lock:
+                            if has_error:
+                                self.stats['traces']['errors'] += 1
+                                root_span.set_status(StatusCode.ERROR)
+                            else:
+                                self.stats['traces']['sent'] += 1
+                        
+                        return not has_error
+
+                except Exception as e:
+                    # Manejo de errores reales
+                    with lock:
+                        self.stats['traces']['errors'] += 1
+                    return False
+
+            # Configurar paralelismo con barra de progreso
+            with tqdm(total=self.args.trace_count, 
+                    desc="🚀 Enviando traces", 
+                    unit="trace",
+                    disable=not self.args.verbose) as pbar:
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=self.args.parallel) as executor:
+                    futures = [executor.submit(_generate_single_trace, i) 
+                             for i in range(self.args.trace_count)]
+
+                    # Actualizar barra conforme se completan
+                    for future in concurrent.futures.as_completed(futures):
+                        pbar.update(1)
+                        try:
+                            future.result()
+                        except Exception as e:
+                            pass  # Los errores ya se registraron en _generate_single_trace
 
             return True
 
         except Exception as e:
-            self.stats['traces']['errors'] += self.args.trace_count
-            logging.error(f"Error en traces: {str(e)}")
-            return False
-
+            logging.error(f"Error crítico en generación de traces: {str(e)}")
+            return False#
+    
     def generate_metrics(self):
-        """Genera la cantidad especificada de métricas"""
+        """Genera métricas en paralelo con barra de progreso"""
         try:
             meter = metrics.get_meter(__name__)
             counter = meter.create_counter("otel.tester.counter")
-            for i in range(self.args.metric_count):
-                counter.add(1, {"iteration": i, "protocol": self.args.protocol})
-                self._simulate_work(0.001)
-                self.stats['metrics']['sent'] += 1
-                if self.args.verbose:
-                    print(f"✅ Métrica {i+1} generada")
-            return True
-        except Exception as e:
-            self.stats['metrics']['errors'] += self.args.metric_count
-            logging.error(f"Error en métricas: {str(e)}")
-            return False
 
-    def generate_logs(self):
-        """Genera la cantidad especificada de logs"""
-        try:
-            logger = logging.getLogger(__name__)
-            levels = [logging.INFO, logging.WARNING, logging.ERROR]
-            messages = ["Inicio de proceso batch", "Advertencia: recurso limitado", "Error crítico en módulo"]
-            for i in range(self.args.log_count):
-                log_level = levels[i % 3]
-                log_data = {
-                    "iteration": i,
-                    "service": self.args.service_name,
-                    "timestamp": datetime.now().isoformat(),
-                    "protocol": self.args.protocol
-                }
-                logger.log(
-                    log_level,
-                    messages[i % 3],
-                    extra={"custom_dimensions": json.dumps(log_data), "severity_number": log_level * 10}
-                )
-                self._simulate_work(0.005)
-                self.stats['logs']['sent'] += 1
+            lock = threading.Lock()
+
+            def _generate_single_metric(metric_id: int):
+                try:
+                    # Usar diferentes tipos de métricas
+                    counter.add(metric_id + 1, {"metric_id": metric_id, "protocol": self.args.protocol})
+                    with lock:
+                        self.stats['metrics']['sent'] += 1
+                    return True
+                except Exception as e:
+                    with lock:
+                        self.stats['metrics']['errors'] += 1
+                    return False
+
+            with tqdm(total=self.args.metric_count, 
+                    desc="📈 Enviando métricas", 
+                    unit="metric",
+                    disable=not self.args.verbose) as pbar:
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=self.args.parallel) as executor:
+                    futures = [executor.submit(_generate_single_metric, i) 
+                             for i in range(self.args.metric_count)]
+
+                    for future in concurrent.futures.as_completed(futures):
+                        pbar.update(1)
+                        future.result()
+
             return True
+
         except Exception as e:
-            self.stats['logs']['errors'] += self.args.log_count
-            logging.error(f"Error en logs: {str(e)}")
+            logging.error(f"Error crítico en métricas: {str(e)}")
+            return False    
+    
+    def generate_logs(self):
+        """Genera logs en paralelo con barra de progreso"""
+        try:
+            logger = logging.getLogger("otel_tester")
+            log_levels = [logging.INFO, logging.WARNING, logging.ERROR, logging.DEBUG]
+            lock = threading.Lock()
+
+            messages = [
+            "Inicio de proceso paralelo",
+            "Advertencia de carga elevada",
+            "Error crítico en hilo",
+            "Conexion a base de datos"
+            ]
+
+            def _generate_single_log(log_id: int):
+            #for i in range(self.args.log_count):
+                try:
+                    level = log_levels[log_id % 4]
+                    structured_data = {
+                        "log_id": log_id,
+                        "service": self.args.service_name,
+                        "thread": threading.get_ident(),
+                        "protocol": self.args.protocol
+                    }
+                    logger.log(level, messages[log_id % 3], extra={
+                        "custom_dimensions": json.dumps(structured_data)
+                    })
+
+                    if self.args.verbose and not self.args.all:
+                        # Mostrar en consola el nivel real enviado
+                        tqdm.write(f"Enviado log {log_id +1} | Level: {logging.getLevelName(level)}")
+
+                    with lock:
+                        self.stats['logs']['sent'] += 1
+                    return True
+                except Exception as e:
+                    with lock:
+                        self.stats['logs']['errors'] += 1
+                    return False
+            
+            with tqdm(total=self.args.log_count, 
+                desc="📝 Enviando logs", 
+                unit="log",
+                disable=not self.args.verbose) as pbar:
+            
+                with concurrent.futures.ThreadPoolExecutor(max_workers=self.args.parallel) as executor:
+                    futures = [executor.submit(_generate_single_log, i) 
+                             for i in range(self.args.log_count)]
+
+                    for future in concurrent.futures.as_completed(futures):
+                        pbar.update(1)
+                        future.result()
+
+            return True
+
+        except Exception as e:
+            logging.error(f"Error crítico en logs: {str(e)}")
             return False
 
     def _simulate_work(self, base_duration: float):
@@ -305,24 +438,19 @@ class TelemetrySender:
         print(f"\n🚀 Iniciando envío de telemetría")
         print("------------------------------")
         if self.args.verbose:
-            print(f"\n🔧 Configuración:")
-            print(f"  - Endpoint: {self.args.endpoint}")
-            print(f"  - Protocolo: {self.args.protocol.upper()}")
-            print(f"  - Secure: {'✅' if self.args.secure else '❌'}")
+            print(f"\n🔧 Configuración")
+            print(f" ↳ Endpoint: {self.args.endpoint} | Protocolo: {self.args.protocol.upper()} | Secure: {'✅' if self.args.secure else '❌'}")
             print(f"\n📦 Total a enviar:")
-            print(f"  - Traces: {self.args.trace_count or 'N/A'}")
-            print(f"  - Métricas: {self.args.metric_count or 'N/A'}")
-            print(f"  - Logs: {self.args.log_count or 'N/A'}")
-            print(f"{'\n🔁  Modo: Continuo' if self.args.tail else '\n1️⃣  Modo: Single batch'}")
-            print("------------------------------")
+            print(f" ↳ Traces: {self.args.trace_count or 'N/A'} | Métricas: {self.args.metric_count or 'N/A'} | Logs: {self.args.log_count or 'N/A'}")
+            print(f"\n🔁  Modo:")
+            print(f" ↳ Continuo | Paralelismo: {self.args.parallel}" if self.args.tail else f" ↳ Single batch | Paralelismo: {self.args.parallel}")
+            print(f"------------------------------\n")
             
-
     def _print_cycle_stats(self, duration: float):
         """Muestra estadísticas del ciclo"""
         print(f"\n⏱️  Ciclo completado en {duration:.2f}s")
-        print(f"  - Traces enviados: {self.stats['traces']['sent']}")
-        print(f"  - Métricas enviadas: {self.stats['metrics']['sent']}")
-        print(f"  - Logs enviados: {self.stats['logs']['sent']}")
+        print(f" ↳ Traces enviados: {self.stats['traces']['sent']} | Métricas enviadas: {self.stats['metrics']['sent']} | Logs enviados: {self.stats['logs']['sent']}")
+
         print("------------------------------")
 
     def shutdown(self):
@@ -339,10 +467,12 @@ class TelemetrySender:
                 trace.get_tracer_provider().shutdown()
             if self.args.metric_count > 0:
                 metrics.get_meter_provider().shutdown()
+                metrics.get_meter_provider().force_flush()
             if self.args.log_count > 0:
                 from opentelemetry._logs import get_logger_provider
                 logger_provider = get_logger_provider()
                 if logger_provider:
+                    logger_provider.force_flush()
                     logger_provider.shutdown()
 
             if self.args.verbose:
